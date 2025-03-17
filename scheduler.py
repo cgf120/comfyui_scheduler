@@ -127,8 +127,6 @@ class ComfyUIScheduler:
             )
             if await node.initialize():
                 self.nodes[node_id] = node
-                # 连接WebSocket
-                await node.connect_websocket()
                 # 启动监控任务
                 asyncio.create_task(self._monitor_node(node))
         
@@ -279,12 +277,12 @@ class ComfyUIScheduler:
             node.process = process
             
             # 等待节点启动
-            max_retries = 30
+            max_retries = 300
             for i in range(max_retries):
                 if await node.initialize():
                     logging.info(f"Local node {node_id} started on port {port}")
                     return node
-                await asyncio.sleep(1)
+                await asyncio.sleep(5)
             
             # 如果无法启动，终止进程
             process.terminate()

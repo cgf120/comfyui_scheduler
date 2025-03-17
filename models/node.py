@@ -39,6 +39,11 @@ class ComfyNode:
                     self.status = "running"
                     self.last_heartbeat = time.time()
                     logger.info(f"Node {self.node_id} ({self.url}) is online")
+
+                    # 连接WebSocket
+                    await self.connect_websocket()
+                    logger.info(f"WebSocket连接已建立")
+
                     return True
                 else:
                     self.status = "error"
@@ -102,7 +107,7 @@ class ComfyNode:
         try:
             # 这里可以根据需要处理消息
             # 例如，解析JSON，更新节点状态，记录日志等
-            logger.debug(f"从节点 {self.node_id} 接收到WebSocket消息: {message[:100]}...")
+            logger.info(f"从节点 {self.node_id} 接收到WebSocket消息: {message}...")
             
             # 如果需要，可以将消息存储到队列或数据库中
             # 或者触发其他事件
