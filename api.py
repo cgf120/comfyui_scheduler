@@ -1,7 +1,8 @@
 import logging
 import uuid
 import asyncio
-from aiohttp import web
+import aiohttp
+from aiohttp import web, WSMsgType
 from typing import Dict
 
 logger = logging.getLogger("ComfyUI-Scheduler")
@@ -37,6 +38,68 @@ def setup_routes(app, scheduler):
             return web.json_response({"task_id": task_id, "status": "queued"})
         except Exception as e:
             logger.error(f"Error submitting prompt: {str(e)}")
+            return web.json_response({"error": str(e)}, status=400)
+    
+    @routes.post("/upload")
+    async def upload_file(request):
+        """上传文件到ComfyUI节点"""
+        try:
+            # 获取表单数据
+            reader = await request.multipart()
+            field = await reader.next()
+            
+            if field is None:
+                return web.json_response({"error": "No file provided"}, status=400)
+            
+            # 获取文件名和内容
+            filename = field.filename
+            if not filename:
+                return web.json_response({"error": "No filename provided"}, status=400)
+            
+            # 获取目标节点ID
+            node_id = request.query.get('node_id')
+            if not node_id or node_id not in scheduler.nodes:
+                return web.json_response({"error": "Valid node_id is required"}, status=400)
+            
+            node = scheduler.nodes[node_id]
+            
+            # 读取文件内容
+            file_content = bytearray()
+            while True:
+                chunk = await field.read_chunk()
+                if not chunk:
+                    break
+                file_content.extend(chunk)
+            
+            # 构建上传请求
+            upload_url = f"http://{node.host}:{node.port}/upload/image"
+            
+            # 发送文件到ComfyUI节点
+            form = aiohttp.FormData()
+            form.add_field('image', 
+                          file_content,
+                          filename=filename,
+                          content_type='application/octet-stream')
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(upload_url, data=form) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        return web.json_response({
+                            "success": True,
+                            "filename": filename,
+                            "node_id": node_id,
+                            "result": result
+                        })
+                    else:
+                        error_text = await response.text()
+                        return web.json_response({
+                            "success": False,
+                            "error": f"Upload failed: {error_text}"
+                        }, status=response.status)
+                        
+        except Exception as e:
+            logger.error(f"Error uploading file: {str(e)}")
             return web.json_response({"error": str(e)}, status=400)
     
     @routes.post("/nodes")

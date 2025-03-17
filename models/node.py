@@ -1,6 +1,7 @@
 import time
 import logging
 import aiohttp
+import asyncio
 import subprocess
 from typing import Dict, List, Optional, Tuple, Any
 
@@ -47,19 +48,66 @@ class ComfyNode:
             self.status = "error"
             logger.error(f"Failed to connect to node {self.node_id}: {str(e)}")
             return False
-    
+    # 在Node类中添加以下方法
+
     async def connect_websocket(self):
-        """连接到节点的WebSocket以接收实时更新"""
-        if self.client_session is None:
-            self.client_session = aiohttp.ClientSession()
-        
+        """连接到ComfyUI节点的WebSocket并持续监听"""
+        self.ws = None
         try:
-            self.ws = await self.client_session.ws_connect(self.ws_url)
-            logger.info(f"WebSocket connected to node {self.node_id}")
+            self.ws_session = aiohttp.ClientSession()
+            ws_url = f"ws://{self.host}:{self.port}/ws"
+            self.ws = await self.ws_session.ws_connect(ws_url)
+            logger.info(f"已连接到节点 {self.node_id} 的WebSocket")
+            
+            # 启动监听任务
+            self.ws_task = asyncio.create_task(self._listen_websocket())
             return True
         except Exception as e:
-            logger.error(f"Failed to connect WebSocket to node {self.node_id}: {str(e)}")
+            logger.error(f"连接节点 {self.node_id} 的WebSocket失败: {str(e)}")
+            if self.ws_session:
+                await self.ws_session.close()
             return False
+
+    async def _listen_websocket(self):
+        """监听WebSocket消息"""
+        if self.ws is None:
+            logger.warning(f"节点 {self.node_id} WebSocket未连接")
+            return
+        try:
+            async for msg in self.ws:
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    # 处理接收到的消息
+                    await self._process_ws_message(msg.data)
+                elif msg.type == aiohttp.WSMsgType.ERROR:
+                    logger.error(f"节点 {self.node_id} WebSocket错误: {msg.data}")
+                    break
+                elif msg.type == aiohttp.WSMsgType.CLOSED:
+                    logger.info(f"节点 {self.node_id} WebSocket连接已关闭")
+                    break
+        except Exception as e:
+            logger.error(f"监听节点 {self.node_id} WebSocket时出错: {str(e)}")
+        finally:
+            # 重新连接WebSocket
+            if not self.ws.closed:
+                await self.ws.close()
+            
+            # 如果节点仍然活跃，尝试重新连接
+            if self.status != "offline":
+                logger.info(f"尝试重新连接节点 {self.node_id} 的WebSocket")
+                asyncio.create_task(self.connect_websocket())
+    
+
+    async def _process_ws_message(self, message):
+        """处理WebSocket消息"""
+        try:
+            # 这里可以根据需要处理消息
+            # 例如，解析JSON，更新节点状态，记录日志等
+            logger.debug(f"从节点 {self.node_id} 接收到WebSocket消息: {message[:100]}...")
+            
+            # 如果需要，可以将消息存储到队列或数据库中
+            # 或者触发其他事件
+        except Exception as e:
+            logger.error(f"处理节点 {self.node_id} WebSocket消息时出错: {str(e)}")
     
     async def get_queue_info(self) -> Dict:
         """获取节点的队列信息"""

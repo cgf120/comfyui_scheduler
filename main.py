@@ -4,7 +4,11 @@ import sys
 import asyncio
 import logging
 import argparse
-from comfyui_scheduler import ComfyUIScheduler
+
+# 添加项目根目录到Python路径
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from comfyui_scheduler.scheduler import ComfyUIScheduler
 
 async def main():
     """主函数"""

@@ -9,9 +9,10 @@ import uuid
 from typing import Dict, List, Optional, Tuple, Any
 from aiohttp import web
 
-from .models import ComfyNode, DockerServer
-from .utils import check_port_available, find_available_port, start_process
-from .api import setup_routes
+from comfyui_scheduler.models.node import ComfyNode
+from comfyui_scheduler.models.docker_server import DockerServer
+from comfyui_scheduler.utils import check_port_available, find_available_port, start_process
+from comfyui_scheduler.api import setup_routes
 
 logger = logging.getLogger("ComfyUI-Scheduler")
 
@@ -126,6 +127,9 @@ class ComfyUIScheduler:
             )
             if await node.initialize():
                 self.nodes[node_id] = node
+                # 连接WebSocket
+                await node.connect_websocket()
+                # 启动监控任务
                 asyncio.create_task(self._monitor_node(node))
         
         # 确保至少有最小数量的节点
