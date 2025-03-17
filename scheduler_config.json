@@ -1,0 +1,28 @@
+{
+  "min_nodes": 1,
+  "max_nodes": 5,
+  "node_port_start": 8188,
+  "scheduler_port": 8189,
+  "auto_scaling": true,
+  "scale_up_threshold": 3,
+  "scale_down_threshold": 0,
+  "node_check_interval": 10,
+  "remote_nodes": [],
+  "docker_servers": [
+    {
+      "host": "192.168.200.171",
+      "port": 2375,
+      "max_containers": 8,
+      "gpu_ids": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    }
+  ]
+}

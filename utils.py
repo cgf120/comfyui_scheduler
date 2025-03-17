@@ -1,0 +1,43 @@
+import os
+import sys
+import logging
+import psutil
+import subprocess
+from typing import Optional, List
+
+logger = logging.getLogger("ComfyUI-Scheduler")
+
+def check_port_available(port: int) -> bool:
+    """检查端口是否可用"""
+    for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+        try:
+            cmdline = proc.cmdline()
+            if len(cmdline) > 1 and 'python' in cmdline[0].lower():
+                for arg in cmdline:
+                    if f"--port={port}" in arg:
+                        return False
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            pass
+    return True
+
+def find_available_port(start_port: int, end_port: int = 65535) -> Optional[int]:
+    """查找可用端口"""
+    for port in range(start_port, end_port + 1):
+        if check_port_available(port):
+            return port
+    return None
+
+def start_process(cmd: List[str], cwd: str = '') -> Optional[subprocess.Popen]:
+    """启动子进程"""
+    try:
+        process = subprocess.Popen(
+            cmd,
+            cwd=cwd or os.path.dirname(os.path.abspath(__file__)),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        return process
+    except Exception as e:
+        logger.error(f"Error starting process: {str(e)}")
+        return None
