@@ -206,58 +206,69 @@ class ComfyUIScheduler:
             docker_servers_available = [s for s in self.docker_servers.values() 
                                        if s.status == "running" and len(s.available_gpu_ids) > 0]
             
+            # 创建并行启动任务
+            start_tasks = []
             for i in range(nodes_to_start):
-                # 尝试在Docker服务器上启动
+                # 计算当前节点应该使用的端口
+                port = self.node_port_start + len(self.nodes) + i
+                
+                # 创建启动任务
                 if docker_servers_available:
                     # 选择可用GPU最多的服务器
                     server = max(docker_servers_available, key=lambda s: len(s.available_gpu_ids))
-                    port = self.node_port_start + len(self.nodes)
-                    
-                    container_id, gpu_id = await server.start_comfyui_container(port)
-                    if container_id:
-                        # 创建节点
-                        node_id = str(uuid.uuid4())
-                        node = self.create_node(
-                            node_id=node_id,
-                            host=server.host,
-                            port=port,
-                            max_queue_size=5,
-                            container_id=container_id,
-                            server_id=server.server_id
-                        )
-                        
-                        # 等待节点初始化
-                        max_retries = 300
-                        for j in range(max_retries):
-                            if await node.initialize():
-                                self.nodes[node_id] = node
-                                asyncio.create_task(self._monitor_node(node))
-                                logging.info(f"Docker node {node_id} started on server {server.server_id} with GPU {gpu_id}")
-                                break
-                            await asyncio.sleep(5)
-                        else:
-                            # 如果无法初始化，停止容器
-                            await server.stop_container(container_id)
-                            # 尝试本地启动
-                            port = self.node_port_start + len(self.nodes)
-                            node = await self._start_local_node(port)
-                            if node:
-                                self.nodes[node.node_id] = node
-                                asyncio.create_task(self._monitor_node(node))
-                    else:
-                        # 如果无法在Docker上启动，尝试本地启动
-                        port = self.node_port_start + len(self.nodes)
-                        node = await self._start_local_node(port)
-                        if node:
-                            self.nodes[node.node_id] = node
-                            asyncio.create_task(self._monitor_node(node))
+                    # 添加Docker节点启动任务
+                    start_tasks.append(self._start_docker_node(server, port))
                 else:
-                    # 如果没有可用的Docker服务器，尝试本地启动
-                    port = self.node_port_start + len(self.nodes)
-                    node = await self._start_local_node(port)
+                    # 添加本地节点启动任务
+                    start_tasks.append(self._start_local_node(port))
+            
+            # 并行执行所有启动任务
+            if start_tasks:
+                nodes = await asyncio.gather(*start_tasks)
+                
+                # 处理启动结果，添加成功启动的节点
+                for node in nodes:
                     if node:
                         self.nodes[node.node_id] = node
                         asyncio.create_task(self._monitor_node(node))
+    
+    async def _start_docker_node(self, server: DockerServer, port: int) -> Optional[ComfyNode]:
+        """在Docker服务器上启动ComfyUI节点"""
+        try:
+            container_id, gpu_id = await server.start_comfyui_container(port)
+            if not container_id:
+                # 如果无法在Docker上启动，尝试本地启动
+                logging.warning(f"Failed to start Docker container on server {server.server_id}, trying local")
+                return await self._start_local_node(port)
+            
+            # 创建节点
+            node_id = str(uuid.uuid4())
+            node = self.create_node(
+                node_id=node_id,
+                host=server.host,
+                port=port,
+                max_queue_size=5,
+                container_id=container_id,
+                server_id=server.server_id
+            )
+            
+            # 等待节点初始化
+            max_retries = 300
+            for j in range(max_retries):
+                if await node.initialize():
+                    logging.info(f"Docker node {node_id} started on server {server.server_id} with GPU {gpu_id}")
+                    return node
+                await asyncio.sleep(5)
+            
+            # 如果无法初始化，停止容器
+            logging.warning(f"Failed to initialize Docker node on server {server.server_id}, stopping container")
+            await server.stop_container(container_id)
+            
+            # 尝试本地启动
+            return await self._start_local_node(port)
+        except Exception as e:
+            logging.error(f"Error starting Docker node: {str(e)}")
+            return None
     
     async def _start_local_node(self, port: int) -> Optional[ComfyNode]:
         """启动本地ComfyUI节点"""
@@ -473,6 +484,7 @@ class ComfyUIScheduler:
                     await asyncio.sleep(1)
                     await self.task_queue.put((task_id, task_data))
                 else:
+                    node.last_task_time = time.time()
                     prompt_id = result.get("prompt_id", "未知")
                     key = self.config_manager.get("task_info_key", "comfyui:task_info:") + task_id
                     task_data["node_id"] = node.node_id
@@ -502,5 +514,21 @@ class ComfyUIScheduler:
         if not available_nodes:
             return None
         
-        # 选择队列最短的节点
-        return min(available_nodes, key=lambda n: n.queue_size)
+        # 按队列长度分组
+        nodes_by_queue_size = {}
+        for node in available_nodes:
+            if node.queue_size not in nodes_by_queue_size:
+                nodes_by_queue_size[node.queue_size] = []
+            nodes_by_queue_size[node.queue_size].append(node)
+        
+        # 获取最小队列长度
+        min_queue_size = min(nodes_by_queue_size.keys())
+        
+        # 如果有多个节点具有相同的最小队列长度，随机选择一个
+        # 或者选择最近最少使用的节点（根据最后一次任务提交时间）
+        candidates = nodes_by_queue_size[min_queue_size]
+        if len(candidates) == 1:
+            return candidates[0]
+        else:
+            # 选择最近最少使用的节点
+            return min(candidates, key=lambda n: n.last_task_time)

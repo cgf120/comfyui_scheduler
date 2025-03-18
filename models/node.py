@@ -32,6 +32,7 @@ class ComfyNode:
         self.container_id = container_id  # Docker容器ID
         self.server_id = server_id  # 所属服务器ID
         self.client_id = str(uuid.uuid4())  # 为每个节点生成唯一的client_id
+        self.last_task_time = 0  # 上次任务时间
     
     async def initialize(self):
         """初始化节点连接"""
