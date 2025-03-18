@@ -34,8 +34,28 @@ def setup_routes(app, scheduler):
         try:
             data = await request.json()
             task_id = str(uuid.uuid4())
-            await scheduler.task_queue.put((task_id, data))
-            return web.json_response({"task_id": task_id, "status": "queued"})
+            
+            # 检查是否使用工作流ID提交
+            workflow_id = data.get("workflow_id")
+            if workflow_id:
+                workflow = scheduler.get_workflow(workflow_id)
+                # 如果提供了工作流ID，则查找对应的工作流
+                if workflow is not None:
+                    # 准备提交数据，替换输入参数
+                    input_values = data.get("input_values", {})
+                    prompt_data = workflow.prepare_submission(input_values)
+                    # 将处理后的提示数据放入队列
+                    await scheduler.task_queue.put((task_id, prompt_data))
+                    return web.json_response({
+                        "task_id": task_id, 
+                        "status": "queued",
+                        "workflow_id": workflow_id
+                    })
+                else:
+                    return web.json_response({"error": f"Workflow with ID {workflow_id} not found"}, status=404)
+            else:
+                # 如果没有提供工作流ID，则按返回错误信息
+                return web.json_response({"error": "Workflow ID is required"}, status=400)
         except Exception as e:
             logger.error(f"Error submitting prompt: {str(e)}")
             return web.json_response({"error": str(e)}, status=400)

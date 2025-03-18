@@ -13,16 +13,16 @@
       "host": "192.168.200.171",
       "port": 2375,
       "max_containers": 8,
-      "gpu_ids": [
-        0,
-        1,
-        2,
-        3,
-        4,
-        5,
-        6,
-        7
-      ]
+      "gpu_ids": [0, 1, 2, 3, 4, 5, 6, 7]
     }
-  ]
+  ],
+  "redis": {
+    "host": "redis-18548.c281.us-east-1-2.ec2.redns.redis-cloud.com",
+    "port": 18548,
+    "db": 0,
+    "password": "d6AkjiSotvH5SjToEhATLNQGTeFiQvPx"
+  },
+  "workflow_key_prefix": "comfyui:workflow:",
+  "task_info_key": "comfyui:task_info:",
+  "task_id_key": "comfyui:task_id:"
 }

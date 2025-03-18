@@ -8,7 +8,9 @@ import argparse
 # 添加项目根目录到Python路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from comfyui_scheduler.scheduler import ComfyUIScheduler
+from scheduler import ComfyUIScheduler
+from utils.config_utils import ConfigManager
+from utils.redis_utils import RedisManager
 
 async def main():
     """主函数"""
@@ -28,9 +30,14 @@ async def main():
             logging.FileHandler("scheduler.log")
         ]
     )
-    
+
+    # 加载配置
+    config_manager = ConfigManager(args.config)
+    #初始化redis
+    redis_manager  =RedisManager(config_manager.get('redis', {}))
+
     # 创建调度器
-    scheduler = ComfyUIScheduler(config_path=args.config)
+    scheduler = ComfyUIScheduler(config_manager,redis_manager)
     
     # 覆盖配置中的端口
     if args.port:

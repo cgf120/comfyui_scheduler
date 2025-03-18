@@ -1,4 +1,3 @@
-import os
 import sys
 import json
 import time
@@ -6,80 +5,110 @@ import logging
 import asyncio
 import threading
 import uuid
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict,  Optional, Tuple, Any
 from aiohttp import web
 
-from comfyui_scheduler.models.node import ComfyNode
-from comfyui_scheduler.models.docker_server import DockerServer
-from comfyui_scheduler.utils import check_port_available, find_available_port, start_process
-from comfyui_scheduler.api import setup_routes
+from models.node import ComfyNode
+from models.docker_server import DockerServer
+from api import setup_routes
+from models.workflow import ComfyWorkflow
+from utils.utils import check_port_available, find_available_port, start_process
+
+from utils.redis_utils import RedisManager
+from utils.config_utils import ConfigManager
 
 logger = logging.getLogger("ComfyUI-Scheduler")
 
+
+def create_docker_server(server_id: str, host: str, port: int = 2375,
+                         max_containers: int = 8, gpu_ids=None) -> DockerServer:
+    """创建Docker服务器实例"""
+    if gpu_ids is None:
+        gpu_ids = list(range(8))
+    return DockerServer(
+        server_id=server_id,
+        host=host,
+        port=port,
+        max_containers=max_containers,
+        gpu_ids=gpu_ids
+    )
+
+
 class ComfyUIScheduler:
     """ComfyUI调度器，负责管理节点和分发任务"""
-    def __init__(self, config_path: str = "scheduler_config.json"):
+    def __init__(self, config_manager: ConfigManager,redis_manager: RedisManager):
+        self.config_manager = config_manager
         self.nodes: Dict[str, ComfyNode] = {}
         self.docker_servers: Dict[str, DockerServer] = {}
-        self.config_path = config_path
-        self.config = self._load_config()
         self.task_queue = asyncio.Queue()
         self.running = False
         self.lock = threading.Lock()
-        self.min_nodes = self.config.get("min_nodes", 1)
-        self.max_nodes = self.config.get("max_nodes", 5)
-        self.node_port_start = self.config.get("node_port_start", 8188)
-        self.scheduler_port = self.config.get("scheduler_port", 8189)
+        self.min_nodes = self.config_manager.get("min_nodes", 1)
+        self.max_nodes = self.config_manager.get("max_nodes", 5)
+        self.node_port_start = self.config_manager.get("node_port_start", 8188)
+        self.scheduler_port = self.config_manager.get("scheduler_port", 8189)
         self.app = None
         self.runner = None
         self.site = None
+        # 初始化Redis连接
+        self.redis = redis_manager
+
+
     
-    def _load_config(self) -> Dict:
-        """加载配置文件"""
-        default_config = {
-            "min_nodes": 1,
-            "max_nodes": 5,
-            "node_port_start": 8188,
-            "scheduler_port": 8189,
-            "auto_scaling": True,
-            "scale_up_threshold": 3,  # 当平均队列长度超过此值时扩容
-            "scale_down_threshold": 0,  # 当节点空闲时缩容
-            "node_check_interval": 10,  # 秒
-            "remote_nodes": [],  # 远程节点列表 [{"host": "ip", "port": port}]
-            "docker_servers": []  # Docker服务器列表 [{"host": "ip", "port": port, "max_containers": 8, "gpu_ids": [0,1,2,3,4,5,6,7]}]
-        }
+    def get_workflow(self, workflow_id: str) -> Optional[ComfyWorkflow]:
+        """获取工作流"""
+        data =  self.redis.get(self.config_manager.get("workflow_key_prefix") + workflow_id)
+
+        if data:
+            return ComfyWorkflow(**json.loads(data))
+        return None
+    
+    
+    async def submit_workflow(self, 
+                             workflow_id: str,
+                              input_values=None,
+                             client_id: str = '') -> Tuple[bool, str, Dict[str, Any]]:
+        """
+        提交工作流任务
         
-        try:
-            if os.path.exists(self.config_path):
-                with open(self.config_path, 'r') as f:
-                    config = json.load(f)
-                    # 合并默认配置
-                    for key, value in default_config.items():
-                        if key not in config:
-                            config[key] = value
-                    return config
-            else:
-                # 保存默认配置
-                with open(self.config_path, 'w') as f:
-                    json.dump(default_config, f, indent=2)
-                return default_config
-        except Exception as e:
-            logger.error(f"Error loading config: {str(e)}")
-            return default_config
+        Args:
+            workflow_id: 工作流ID
+            input_values: 输入参数值，格式为 {node_id: {param_name: value}}
+            client_id: 客户端ID，如果不提供则自动生成
+            
+        Returns:
+            (成功标志, 任务ID, 结果信息)
+        """
+        # 获取工作流
+        if input_values is None:
+            input_values = {}
+        workflow = self.get_workflow(workflow_id)
+        if not workflow:
+            return False, "", {"error": f"Workflow not found: {workflow_id}"}
+        
+        # 准备提交数据
+        prompt_data = workflow.prepare_submission(input_values)
+        
+        # 生成任务ID
+        task_id = str(uuid.uuid4())
+        
+        # 设置client_id
+        if client_id:
+            prompt_data["client_id"] = client_id
+
+        workflow['prompt'] = prompt_data
+        # 将任务加入队列
+        await self.task_queue.put((task_id, workflow))
+        
+        return True, task_id, {"message": f"Task {task_id} submitted successfully"}
+
     
-    def save_config(self):
-        """保存配置到文件"""
-        try:
-            with open(self.config_path, 'w') as f:
-                json.dump(self.config, f, indent=2)
-            logger.info(f"Config saved to {self.config_path}")
-        except Exception as e:
-            logger.error(f"Error saving config: {str(e)}")
-    
-    def create_node(self, node_id: str, host: str, port: int, max_queue_size: int = 5, 
+    def create_node(self, node_id: str, host: str, port: int, max_queue_size: int = 5,
                    container_id: Optional[str] = None, server_id: Optional[str] = None) -> ComfyNode:
         """创建节点实例"""
         return ComfyNode(
+            config_manager=self.config_manager,
+            redis=self.redis,
             node_id=node_id,
             host=host,
             port=port,
@@ -87,26 +116,15 @@ class ComfyUIScheduler:
             container_id=container_id if container_id else "",
             server_id=server_id if server_id else ""
         )
-    
-    def create_docker_server(self, server_id: str, host: str, port: int = 2375,
-                            max_containers: int = 8, gpu_ids: List[int] = list(range(8))) -> DockerServer:
-        """创建Docker服务器实例"""
-        return DockerServer(
-            server_id=server_id,
-            host=host,
-            port=port,
-            max_containers=max_containers,
-            gpu_ids=gpu_ids
-        )
-    
+
     async def start(self):
         """启动调度器"""
         self.running = True
         
         # 初始化Docker服务器
-        for server_info in self.config.get("docker_servers", []):
+        for server_info in self.config_manager.get("docker_servers", []):
             server_id = str(uuid.uuid4())
-            server = self.create_docker_server(
+            server = create_docker_server(
                 server_id=server_id,
                 host=server_info["host"],
                 port=server_info.get("port", 2375),
@@ -117,13 +135,13 @@ class ComfyUIScheduler:
                 self.docker_servers[server_id] = server
         
         # 初始化远程节点
-        for node_info in self.config.get("remote_nodes", []):
+        for node_info in self.config_manager.get("remote_nodes", []):
             node_id = str(uuid.uuid4())
             node = self.create_node(
-                node_id=node_id,
-                host=node_info["host"],
-                port=node_info["port"],
-                max_queue_size=node_info.get("max_queue_size", 5)
+                node_id,
+                node_info["host"],
+                node_info["port"],
+                node_info.get("max_queue_size", 5)
             )
             if await node.initialize():
                 self.nodes[node_id] = node
@@ -143,7 +161,7 @@ class ComfyUIScheduler:
         asyncio.create_task(self._monitor_nodes())
         
         logger.info(f"ComfyUI Scheduler started on port {self.scheduler_port}")
-    
+
     async def stop(self):
         """停止调度器"""
         self.running = False
@@ -247,7 +265,7 @@ class ComfyUIScheduler:
             # 检查端口是否已被占用
             if not check_port_available(port):
                 logging.warning(f"Port {port} is already in use")
-                return None
+                port = find_available_port(self.config_manager.get("node_port_start", 8188))
             
             # 构建启动命令
             cmd = [sys.executable, "main.py", f"--port={port}", "--listen=0.0.0.0"]
@@ -314,11 +332,11 @@ class ComfyUIScheduler:
                             logger.info(f"Node {node_id} recovered")
                 
                 # 自动扩缩容
-                if self.config.get("auto_scaling", True):
+                if self.config_manager.get("auto_scaling", True):
                     await self._auto_scale()
                 
                 # 等待下一次检查
-                await asyncio.sleep(self.config.get("node_check_interval", 10))
+                await asyncio.sleep(self.config_manager.get("node_check_interval", 10))
             except Exception as e:
                 logger.error(f"Error monitoring nodes: {str(e)}")
                 await asyncio.sleep(5)
@@ -335,7 +353,7 @@ class ComfyUIScheduler:
         avg_queue_size = total_queue_size / len(active_nodes)
         
         # 扩容：如果平均队列长度超过阈值且节点数小于最大值
-        if avg_queue_size > self.config.get("scale_up_threshold", 3) and len(active_nodes) < self.max_nodes:
+        if avg_queue_size > self.config_manager.get("scale_up_threshold", 3) and len(active_nodes) < self.max_nodes:
             logging.info(f"Auto-scaling: Starting new node (avg queue size: {avg_queue_size:.2f})")
             
             # 优先使用Docker服务器
@@ -381,7 +399,7 @@ class ComfyUIScheduler:
                 asyncio.create_task(self._monitor_node(node))
         
         # 缩容：如果有空闲节点且节点数大于最小值
-        elif avg_queue_size < self.config.get("scale_down_threshold", 0) and len(active_nodes) > self.min_nodes:
+        elif avg_queue_size < self.config_manager.get("scale_down_threshold", 0) and len(active_nodes) > self.min_nodes:
             # 找到空闲节点
             idle_nodes = [n for n in active_nodes if n.is_idle()]
             if idle_nodes:
@@ -429,7 +447,7 @@ class ComfyUIScheduler:
         while self.running:
             try:
                 # 获取任务
-                task_id, prompt_data = await self.task_queue.get()
+                task_id, task_data = await self.task_queue.get()
                 
                 # 选择最佳节点
                 node = self._select_best_node()
@@ -438,17 +456,39 @@ class ComfyUIScheduler:
                     # 如果没有可用节点，等待一段时间后重新入队
                     logging.warning(f"No available nodes for task {task_id}, requeuing")
                     await asyncio.sleep(5)
-                    await self.task_queue.put((task_id, prompt_data))
+                    await self.task_queue.put((task_id, task_data))
                     continue
+                # prompt_datab本身包含工作流信息和prompt数据
+                prompt_data = task_data.get("prompt", {})
+                # 记录原始client_id（如果存在）
+                original_client_id = prompt_data.get("client_id", "未指定")
+                logger.info(f"任务 {task_id} 从client_id: {original_client_id} 分配到节点 {node.node_id} (client_id: {node.client_id})")
                 
-                # 提交任务到节点
+                # 提交任务到节点（节点内部会替换client_id）
                 success, result = await node.submit_prompt(prompt_data)
                 
                 if not success:
                     # 如果提交失败，重新入队
                     logging.warning(f"Failed to submit task {task_id} to node {node.node_id}, requeuing")
                     await asyncio.sleep(1)
-                    await self.task_queue.put((task_id, prompt_data))
+                    await self.task_queue.put((task_id, task_data))
+                else:
+                    prompt_id = result.get("prompt_id", "未知")
+                    key = self.config_manager.get("task_info_key", "comfyui:task_info:") + task_id
+                    task_data["node_id"] = node.node_id
+                    task_data["prompt_id"] = prompt_id
+                    task_data["node"] = None
+                    task_data["status"] = "submitted"
+                    task_data["prompt"] = prompt_data
+                    task_data["max_steps"] = len(prompt_data.get("prompt", 0))
+                    task_data["pass_steps"] = 0 # 已完成的步骤
+                    task_data["progress"] = 0.00 # 进度
+                    # 把处理信息推送到redis
+                    self.redis.set(key, json.dumps(task_data))
+                    logger.info(f"任务 {task_id} 提交成功，prompt_id: {prompt_id}")
+                    # 保存task_id与prompt_id的映射
+                    self.redis.set(self.config_manager.get("task_id_key", "comfyui:task_id:") + prompt_id,
+                                         task_id)
                 
                 self.task_queue.task_done()
             except Exception as e:

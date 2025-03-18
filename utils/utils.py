@@ -41,3 +41,15 @@ def start_process(cmd: List[str], cwd: str = '') -> Optional[subprocess.Popen]:
     except Exception as e:
         logger.error(f"Error starting process: {str(e)}")
         return None
+
+
+def convert_to_two_decimal(obj):
+    if isinstance(obj, dict):  # 如果是字典
+        for key, value in obj.items():
+            obj[key] = convert_to_two_decimal(value)
+    elif isinstance(obj, list):  # 如果是列表
+        for i, value in enumerate(obj):
+            obj[i] = convert_to_two_decimal(value)
+    elif isinstance(obj, float):  # 如果是浮点数
+        return round(obj, 2)
+    return obj
