@@ -1,6 +1,6 @@
 {
-  "min_nodes": 1,
-  "max_nodes": 5,
+  "min_nodes": 3,
+  "max_nodes": 8,
   "node_port_start": 8188,
   "scheduler_port": 8189,
   "auto_scaling": true,
