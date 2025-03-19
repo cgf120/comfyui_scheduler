@@ -112,13 +112,15 @@ class DockerServer:
             for container in containers:
                 if "comfyui" in container.name.lower():
                     # 获取容器使用的GPU
-                    env = container.attrs.get('Config', {}).get('Env', [])
-                    for e in env:
-                        if e.startswith('NVIDIA_VISIBLE_DEVICES='):
-                            gpu_id = int(e.split('=')[1])
-                            if gpu_id in self.available_gpu_ids:
-                                self.available_gpu_ids.remove(gpu_id)
-                            self.containers[container.id] = gpu_id
+                    # env = container.attrs.get('Config', {}).get('Env', [])
+                    # for e in env:
+                    #     if e.startswith('NVIDIA_VISIBLE_DEVICES='):
+                    #         gpu_id = int(e.split('=')[1])
+                    #         if gpu_id in self.available_gpu_ids:
+                    #             self.available_gpu_ids.remove(gpu_id)
+                    #         self.containers[container.id] = gpu_id
+                    logger.info(f"Found existing ComfyUI container {container.id} on server {self.server_id}")
+                    await self.stop_container(container.id)
             
             return True
         except Exception as e:

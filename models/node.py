@@ -116,104 +116,119 @@ class ComfyNode:
             # 解析JSON消息
             message_data = json.loads(message)
             msg_type = message_data.get('type')
-
+    
             # 记录完整消息（调试用）
             if msg_type != 'crystools.monitor':
                 logger.info(f"节点 {self.node_id} WebSocket消息: {message}...")
-
+    
             data = message_data.get('data', {})
             if data.get('prompt_id') is not None:
                 prompt_id = data.get('prompt_id')
-                task_id = self.redis.get(self.config_manager.get("task_id_key") + prompt_id)
-                task_info = self.redis.get(self.config_manager.get("task_info_key") + task_id)
-                if task_info is None:
-                    logger.warning(f"Task info not found for prompt {prompt_id}")
-                    return
-                task_info = json.loads(task_info)
-                if task_info.get("logs") is None:
-                    task_info["logs"] = []
-                task_info["logs"].append(data)
-                max_steps = task_info.get("max_steps", 0)
-                pass_steps = task_info.get("pass_steps", 0)
-                task_info["progress_node"] = None
-
-
-                if msg_type == "execution_start":
-                    if task_info is None:
-                        logger.warning(f"Task info not found for prompt {prompt_id}")
-                        return
-                    task_info["status"] = "running"
-                    task_info["start_time"] = data.get("timestamp")
-                    logger.info(f"Prompt {prompt_id} 开始执行")
-
-                elif msg_type == "executed" or  msg_type == "executing":
-                    if task_info is None:
-                        logger.warning(f"Task info not found for prompt {prompt_id}")
-                        return
-                    task_info["node"] = data.get("node")
-                    pass_steps = pass_steps + 1
-                    task_info['pass_steps'] = pass_steps
-                    task_info['progress'] = pass_steps/max_steps
-                    # 处理最后一个节点输出
-                    if data.get("node") in task_info.get("output_nodes", []):
-                        # todo 处理输出的下载地址信息
-                        task_info['output'] = data.get("output")
-
-                elif msg_type == "execution_cached":
-                    if task_info is None:
-                        logger.warning(f"Task info not found for prompt {prompt_id}")
-                        return
-                    task_info["node"] = data.get("nodes")
-                    pass_steps = pass_steps + len(data.get("nodes"))
-                    task_info['pass_steps'] = pass_steps
-                    task_info['progress'] = pass_steps/max_steps
-                elif msg_type == "progress":
-                    if task_info is None:
-                        logger.warning(f"Task info not found for prompt {prompt_id}")
-                        return
-                    task_info["progress_node"] = data.get("node")
-                    current_value = data.get("value")
-                    max_value = data.get("max")
-                    task_info["progress_node"] = f'{current_value}/{max_value}'
-                    if max_value == current_value:
-                        pass_steps = pass_steps + 1
-                        task_info['pass_steps'] = pass_steps
-                        task_info['progress'] = pass_steps/max_steps
-                elif msg_type == "execution_success":
-                    if task_info is None:
-                        logger.warning(f"Task info not found for prompt {prompt_id}")
-                        return
-                    task_info["status"] = "success"
-                    task_info["end_time"] = data.get("timestamp")
-                    logger.info(f"Prompt {prompt_id} 执行成功")
-                elif msg_type == "execution_error":
-                    if task_info is None:
-                        logger.warning(f"Task info not found for prompt {prompt_id}")
-                        return
-                    task_info["status"] = "error"
-                    task_info["node"] = data.get("node_id") #错误的时候给的是node_id
-                    task_info["end_time"] = data.get("timestamp")
-                    logger.error(f"Prompt {prompt_id} 执行出错: {data.get('error')}")
-                elif msg_type == "execution_interrupted":
-                    if task_info is None:
-                        logger.warning(f"Task info not found for prompt {prompt_id}")
-                        return
-                    task_info["status"] = "interrupted"
-                    task_info["node"] = data.get("node_id") #错误的时候给的是node_id
-                    task_info["end_time"] = data.get("timestamp")
-                    logger.warning(f"Prompt {prompt_id} 执行被中断")
-                else:
-                    logger.warning(f"未知消息类型: {msg_type}")
-                self.redis.set(self.config_manager.get("task_info_key") + task_id, json.dumps(task_info))
+                # 使用异步任务处理WebSocket消息，避免阻塞主事件循环
+                asyncio.create_task(self._handle_prompt_message(prompt_id, msg_type, data))
             else:
                 #其他消息不处理 目前有的系统监控信息 gpu/cpu使用等
                 pass
-            
             
         except json.JSONDecodeError as e:
             logger.error(f"解析节点 {self.node_id} WebSocket消息JSON时出错: {str(e)}")
         except Exception as e:
             logger.error(f"处理节点 {self.node_id} WebSocket消息时出错: {str(e)}")
+
+    async def _handle_prompt_message(self, prompt_id, msg_type, data):
+        """处理与prompt相关的WebSocket消息"""
+        try:
+            # 添加超时控制的Redis操作
+            task_id = await asyncio.wait_for(
+                asyncio.to_thread(self.redis.get, self.config_manager.get("task_id_key") + prompt_id),
+                timeout=2.0
+            )
+            
+            if not task_id:
+                logger.warning(f"Task ID not found for prompt {prompt_id}")
+                return
+                
+            task_info_key = self.config_manager.get("task_info_key") + task_id
+            task_info_str = await asyncio.wait_for(
+                asyncio.to_thread(self.redis.get, task_info_key),
+                timeout=2.0
+            )
+            
+            if not task_info_str:
+                logger.warning(f"Task info not found for prompt {prompt_id}, task_id: {task_id}")
+                return
+                
+            import json
+            task_info = json.loads(task_info_str)
+            
+            if task_info.get("logs") is None:
+                task_info["logs"] = []
+            task_info["logs"].append(data)
+            max_steps = task_info.get("max_steps", 0)
+            pass_steps = task_info.get("pass_steps", 0)
+            task_info["progress_node"] = None
+    
+            # 根据消息类型更新任务信息
+            if msg_type == "execution_start":
+                task_info["status"] = "running"
+                task_info["start_time"] = data.get("timestamp")
+                logger.info(f"Prompt {prompt_id} 开始执行")
+    
+            elif msg_type == "executed" or msg_type == "executing":
+                task_info["node"] = data.get("node")
+                pass_steps = pass_steps + 1
+                task_info['pass_steps'] = pass_steps
+                task_info['progress'] = pass_steps/max_steps if max_steps > 0 else 0
+                # 处理最后一个节点输出
+                if data.get("node") in task_info.get("output_nodes", []):
+                    task_info['output'] = data.get("output")
+    
+            elif msg_type == "execution_cached":
+                task_info["node"] = data.get("nodes")
+                nodes_count = len(data.get("nodes", []))
+                pass_steps = pass_steps + nodes_count
+                task_info['pass_steps'] = pass_steps
+                task_info['progress'] = pass_steps/max_steps if max_steps > 0 else 0
+                
+            elif msg_type == "progress":
+                task_info["progress_node"] = data.get("node")
+                current_value = data.get("value", 0)
+                max_value = data.get("max", 1)
+                task_info["progress_node"] = f'{current_value}/{max_value}'
+                if max_value > 0 and max_value == current_value:
+                    pass_steps = pass_steps + 1
+                    task_info['pass_steps'] = pass_steps
+                    task_info['progress'] = pass_steps/max_steps if max_steps > 0 else 0
+                    
+            elif msg_type == "execution_success":
+                task_info["status"] = "success"
+                task_info["end_time"] = data.get("timestamp")
+                logger.info(f"Prompt {prompt_id} 执行成功")
+                
+            elif msg_type == "execution_error":
+                task_info["status"] = "error"
+                task_info["node"] = data.get("node_id") #错误的时候给的是node_id
+                task_info["end_time"] = data.get("timestamp")
+                logger.error(f"Prompt {prompt_id} 执行出错: {data.get('error')}")
+                
+            elif msg_type == "execution_interrupted":
+                task_info["status"] = "interrupted"
+                task_info["node"] = data.get("node_id") #错误的时候给的是node_id
+                task_info["end_time"] = data.get("timestamp")
+                logger.warning(f"Prompt {prompt_id} 执行被中断")
+                
+            else:
+                logger.warning(f"未知消息类型: {msg_type}")
+                
+            # 异步保存更新后的任务信息
+            await asyncio.wait_for(
+                asyncio.to_thread(self.redis.set, task_info_key, json.dumps(task_info)),
+                timeout=2.0
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"处理prompt {prompt_id}消息时Redis操作超时")
+        except Exception as e:
+            logger.error(f"处理prompt {prompt_id}消息时出错: {str(e)}")
     
     async def get_queue_info(self) -> Dict:
         """获取节点的队列信息"""
@@ -251,10 +266,11 @@ class ComfyNode:
             # 设置或替换client_id
             prompt_data["client_id"] = self.client_id
             
+            # 使用更短的超时时间，避免长时间阻塞
             async with self.client_session.post(
                 f"{self.api_url}/prompt", 
                 json=prompt_data,
-                timeout=aiohttp.ClientTimeout(total=30)
+                timeout=aiohttp.ClientTimeout(total=15, connect=5)
             ) as response:
                 result = await response.json()
                 if response.status == 200:
@@ -263,6 +279,9 @@ class ComfyNode:
                 else:
                     logger.warning(f"Failed to submit prompt to node {self.node_id}, status: {response.status}, error: {result}")
                     return False, result
+        except asyncio.TimeoutError:
+            logger.error(f"提交任务到节点 {self.node_id} 超时")
+            return False, {"error": "Request timeout"}
         except Exception as e:
             logger.error(f"Error submitting prompt to node {self.node_id}: {str(e)}")
             return False, {"error": str(e)}

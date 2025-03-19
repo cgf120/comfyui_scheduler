@@ -44,8 +44,10 @@ def setup_routes(app, scheduler):
                     # 准备提交数据，替换输入参数
                     input_values = data.get("input_values", {})
                     prompt_data = workflow.prepare_submission(input_values)
-                    # 将处理后的提示数据放入队列
-                    await scheduler.task_queue.put((task_id, prompt_data))
+                    
+                    # 使用create_task将任务放入队列，避免阻塞当前请求处理
+                    asyncio.create_task(scheduler.task_queue.put((task_id, prompt_data)))
+                    
                     return web.json_response({
                         "task_id": task_id, 
                         "status": "queued",
@@ -54,7 +56,7 @@ def setup_routes(app, scheduler):
                 else:
                     return web.json_response({"error": f"Workflow with ID {workflow_id} not found"}, status=404)
             else:
-                # 如果没有提供工作流ID，则按返回错误信息
+                # 如果没有提供工作流ID，则返回错误信息
                 return web.json_response({"error": "Workflow ID is required"}, status=400)
         except Exception as e:
             logger.error(f"Error submitting prompt: {str(e)}")
