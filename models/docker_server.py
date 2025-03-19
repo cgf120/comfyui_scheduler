@@ -22,13 +22,9 @@ class DockerServer:
         self.client = docker.DockerClient(base_url=self.docker_url)
         self.status = "initializing"
         # Add new configuration parameters
-        self.image = image or "192.168.200.5/chenyu/public/c503abeeefb74af4ab4cb0e5948d4c56:v1.0.4-test-20250310"
+        self.image = image or "test:v1"
         self.volumes = volumes or {
-            "/mnt/pod-data/657442e3a84541f39df82091a53a6666": {"bind": "/poddata", "mode": "ro"},
-            "/mnt/chenyu-nvme": {"bind": "/mnt/chenyu-nvme", "mode": "ro"},
-            "/mnt/chenyu-nvme": {"bind": "/chenyudata", "mode": "ro"},
-            "/mnt/user-data/store0/0/c9dbf7dd806c": {"bind": "/usrdata", "mode": "rw"},
-            "/mnt/user-data/store0/0/c9dbf7dd806c/container/657442e3a84541f39df82091a53a6666": {"bind": "/app", "mode": "rw"}
+            "/mnt/nvme/comfyui": {"bind": "/root/ComfyUI", "mode": "rw"},
         }
 
     async def start_comfyui_container(self, port: int) -> Tuple[Optional[str], Optional[int]]:

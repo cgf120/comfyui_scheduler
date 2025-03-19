@@ -17,10 +17,10 @@
     }
   ],
   "redis": {
-    "host": "redis-18548.c281.us-east-1-2.ec2.redns.redis-cloud.com",
-    "port": 18548,
+    "host": "192.168.200.3",
+    "port": 6379,
     "db": 0,
-    "password": "d6AkjiSotvH5SjToEhATLNQGTeFiQvPx"
+    "password": "Dm2mrAHN"
   },
   "workflow_key_prefix": "comfyui:workflow:",
   "task_info_key": "comfyui:task_info:",

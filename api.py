@@ -10,24 +10,9 @@ logger = logging.getLogger("ComfyUI-Scheduler")
 def setup_routes(app, scheduler):
     """设置API路由"""
     routes = web.RouteTableDef()
-    
-    @routes.get("/nodes")
-    async def get_nodes(request):
-        """获取所有节点信息"""
-        nodes_info = {}
-        for node_id, node in scheduler.nodes.items():
-            nodes_info[node_id] = {
-                "host": node.host,
-                "port": node.port,
-                "url": node.url,
-                "status": node.status,
-                "queue_size": node.queue_size,
-                "last_heartbeat": node.last_heartbeat,
-                "is_available": node.is_available(),
-                "is_local": node.is_local
-            }
-        return web.json_response(nodes_info)
-    
+
+# Comfyui接口
+
     @routes.post("/prompt")
     async def submit_prompt(request):
         """提交提示到调度器"""
@@ -123,7 +108,27 @@ def setup_routes(app, scheduler):
         except Exception as e:
             logger.error(f"Error uploading file: {str(e)}")
             return web.json_response({"error": str(e)}, status=400)
-    
+
+
+# 系统接口
+
+    @routes.get("/nodes")
+    async def get_nodes(request):
+        """获取所有节点信息"""
+        nodes_info = {}
+        for node_id, node in scheduler.nodes.items():
+            nodes_info[node_id] = {
+                "host": node.host,
+                "port": node.port,
+                "url": node.url,
+                "status": node.status,
+                "queue_size": node.queue_size,
+                "last_heartbeat": node.last_heartbeat,
+                "is_available": node.is_available(),
+                "is_local": node.is_local
+            }
+        return web.json_response(nodes_info)
+
     @routes.post("/nodes")
     async def add_node(request):
         """手动添加节点"""

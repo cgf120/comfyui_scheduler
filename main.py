@@ -45,7 +45,7 @@ async def main():
     
     try:
         # 启动调度器
-        await scheduler.start()
+        asyncio.create_task(scheduler.start())
         
         # 保持运行
         while True:
